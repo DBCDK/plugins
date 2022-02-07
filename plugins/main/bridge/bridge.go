@@ -24,6 +24,13 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+	//"os"
+	"os/exec"
+	"path/filepath"
+	"bufio"
+	"regexp"
+	"bytes"
+	"strconv"
 
 	"github.com/vishvananda/netlink"
 
@@ -42,6 +49,7 @@ import (
 
 // For testcases to force an error after IPAM has been performed
 var debugPostIPAMError error
+var re = regexp.MustCompile(`(tcp|udp)\s+[A-Z_]+\s+0\s+0\s+`)
 
 const defaultBrName = "cni0"
 
@@ -660,6 +668,42 @@ func cmdDel(args *skel.CmdArgs) error {
 	if args.Netns == "" {
 		return nil
 	}
+
+	path := args.Netns
+	base := filepath.Base(path)
+
+	var tries = 0
+	var match bool
+	startTime := time.Now()
+	for {
+		match = true
+		cmd2 := exec.Command("@iproute2@/bin/ss", "-N", base, "-Htu")
+		var stdout bytes.Buffer
+		cmd2.Stdout = &stdout
+		err = cmd2.Run()
+		if err != nil {
+			return err
+		}
+
+		scanner := bufio.NewScanner(&stdout)
+		var line []byte
+		for scanner.Scan() {
+			line = scanner.Bytes()
+			match = match && re.Match(line)
+		}
+
+		tries = tries + 1
+		if tries >= 30 || match {
+			break
+		}
+
+		ioutil.WriteFile("/tmp/tries", []byte(strconv.Itoa(tries)), 0644)
+		time.Sleep(1 * time.Second)
+	}
+
+	endTime := time.Now()
+	dur := endTime.Sub(startTime)
+	ioutil.WriteFile("/tmp/shutdowntime", []byte(fmt.Sprint(dur)), 0644)
 
 	// There is a netns so try to clean up. Delete can be called multiple times
 	// so don't return an error if the device is already removed.
